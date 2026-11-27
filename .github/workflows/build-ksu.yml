@@ -1,0 +1,75 @@
+name: Build vayu KernelSU-Next kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ksu-arrow
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/lib/node_modules
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            python3 zip unzip cpio kmod device-tree-compiler \
+            binutils-aarch64-linux-gnu
+
+      - name: Download clang r450784d
+        run: |
+          mkdir -p "$HOME/toolchains/clang"
+          curl -fL --retry 3 -o "$HOME/toolchains/clang.tar.gz" \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-13.0.0_r1/clang-r450784d.tar.gz"
+          tar -xzf "$HOME/toolchains/clang.tar.gz" -C "$HOME/toolchains/clang"
+          "$HOME/toolchains/clang/bin/clang" --version
+
+      - name: Configure kernel
+        run: |
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- GCC_TOOLCHAIN= \
+            vayu_user_defconfig
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_HZ|CONFIG_LOCALVERSION" out/.config
+
+      - name: Build kernel Image
+        run: |
+          export PATH="$HOME/toolchains/clang/bin:$PATH"
+          make O=out ARCH=arm64 \
+            CC=clang LD=ld.lld CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- GCC_TOOLCHAIN= \
+            -j"$(nproc)" Image
+
+      - name: Show kernel info
+        run: |
+          ls -l out/arch/arm64/boot/Image
+          file out/arch/arm64/boot/Image
+
+      - name: Upload kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: vayu-ksu-Image
+          path: |
+            out/arch/arm64/boot/Image
+            out/.config
+          compression-level: 0
+          if-no-files-found: error
